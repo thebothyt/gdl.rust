@@ -1,0 +1,20 @@
+// A staircase of blocks that all share one group, a row of spikes,
+// and a move trigger that lifts the staircase 90 units over 1.5 seconds.
+
+let stairs = group()
+
+for i in 0..10 {
+  let b = obj(1, 15 + i * 30, 15 + i * 30)
+  add_group(b, stairs)
+}
+
+fn spike_row(x, n) {
+  for i in 0..n {
+    obj(8, x + i * 30, 15)
+  }
+}
+
+spike_row(500, 4)
+
+move(400, 15, stairs, 0, 90, 1.5)
+print("done")
