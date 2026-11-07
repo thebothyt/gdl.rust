@@ -76,21 +76,7 @@ npx wrangler deploy
 The Worker can't see files on your device: you upload the `.gdlvl` and the script,
 and it returns the patched file to download.
 
-## Things I could not verify (please check these first)
-
-1. **The real `.gdlvl` layout.** The only description I found says GZIP + Base64 around an
-   XML-style level. `patcher` assumes the familiar `<k>k4</k><s>LEVEL STRING</s>` and
-   auto-detects gzip / base64+gzip / plain XML on the outside. If your file differs,
-   `gdl inspect` prints the first bytes or the XML so the patcher can be adjusted.
-2. **Trigger property keys** (901 move, 1007 alpha, 1049 toggle; keys 51, 28, 29, 35, 56, 10,
-   and `36,1` as the trigger flag) come from my memory of the GD object format. Compare with a
-   trigger you place in the editor, and fix with `set()` or in `interp.rs` if any is off.
-3. **Output size.** Without a compression crate, written gzip uses stored blocks (valid, but
-   not smaller). With network access, swap `gzip_stored` for `flate2`.
-4. **The Worker build** (wasm-pack + wrangler) was not run in the sandbox that wrote it.
-   `initSync({ module })` matches current wasm-bindgen; older versions took the module directly.
-
-## Ideas for next steps
+## Ideas for next steps (for me lmao)
 
 Lists/arrays, `rand()`, more triggers (pulse, spawn, rotate, follow), grouping helpers like
 `obj_in(group, ...)`, colors (`color` channel triggers), an `import` for reusable files, and a
