@@ -1,4 +1,4 @@
-# gdl
+# gdl.rust
 
 A small scripting language, written in Rust, that generates Geometry Dash level
 objects and writes them into a `.gdlvl` file. The core has zero dependencies, so the
