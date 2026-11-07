@@ -1,4 +1,5 @@
-name = "gdl-editor"
+# worker/wrangler.toml
+name = 'gdl-rust'
 main = "src/index.js"
 compatibility_date = "2026-11-01"
 
