@@ -1,0 +1,8 @@
+[package]
+name = "gdl_core"
+version = "0.1.0"
+edition = "2021"
+
+# No dependencies on purpose: the core (language + codec) is pure std,
+# so it compiles anywhere, including wasm32-unknown-unknown for Workers.
+[dependencies]
