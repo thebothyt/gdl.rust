@@ -1,0 +1,6 @@
+name = "gdl-editor"
+main = "src/index.js"
+compatibility_date = "2026-11-01"
+
+[build]
+command = "wasm-pack build --target web --out-dir pkg"
