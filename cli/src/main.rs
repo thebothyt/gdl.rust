@@ -7,6 +7,10 @@ gdl - a tiny scripting language for Geometry Dash levels
 usage:
   gdl run <script.gdl>                         run a script, print the objects it makes
   gdl inspect <level.gdlvl>                    decode a level file and show its layout
+  gdl preview <script.gdl>                     the JSON the web preview draws (objects + script lines)
+  gdl base <level.gdlvl>                       the same JSON for objects already in a level
+  gdl objects <level.gdlvl>                    list every object (id + raw properties); use it to
+                                               look up the IDs/keys of anything you placed in-game
   gdl patch <level.gdlvl> <script.gdl> [-o out]  add the script's objects to a level file
 ";
 
@@ -32,6 +36,15 @@ fn real_main(args: Vec<String>) -> i32 {
     let res = match args.first().map(|s| s.as_str()) {
         Some("run") if args.len() == 2 => cmd_run(&args[1]),
         Some("inspect") if args.len() == 2 => cmd_inspect(&args[1]),
+        Some("preview") if args.len() == 2 => {
+            read_text(&args[1]).map(|src| println!("{}", gdl_core::preview_json(&src)))
+        }
+        Some("base") if args.len() == 2 => {
+            read(&args[1]).map(|f| println!("{}", gdl_core::base_json(&f)))
+        }
+        Some("objects") if args.len() == 2 => {
+            read(&args[1]).and_then(|f| gdl_core::codec::list_objects(&f)).map(|s| print!("{s}"))
+        }
         Some("patch") if args.len() >= 3 => cmd_patch(&args[1..]),
         _ => {
             eprint!("{USAGE}");

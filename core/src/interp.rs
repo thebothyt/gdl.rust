@@ -10,8 +10,44 @@ const MAX_OBJECTS: usize = 150_000;
 const MAX_DEPTH: usize = 100;
 
 pub const BUILTINS: &[&str] = &[
-    "obj", "set", "add_group", "group", "color", "move", "alpha", "toggle", "print", "floor",
-    "ceil", "round", "abs", "sqrt", "sin", "cos", "min", "max", "pow",
+    "obj", "set", "add_group", "group", "color", "move", "alpha", "toggle", "trigger", "pulse",
+    "color_trigger", "spawn", "rotate", "shake", "stop", "print", "floor", "ceil", "round", "abs",
+    "sqrt", "sin", "cos", "min", "max", "pow",
+];
+
+// Property keys, available in scripts as P_<NAME>. Cross-checked against the property
+// tables in SPWN (constants.spwn) and the gdlib crate (lookup.rs). Item/counter keys
+// (77, 78, 80, 95) are from SPWN's 2.1-era table; verify them on 2.2 with `gdl objects`.
+const PROPS: &[(&str, u32)] = &[
+    ("OBJ_ID", 1), ("X", 2), ("Y", 3), ("FLIP_X", 4), ("FLIP_Y", 5), ("ROTATION", 6),
+    ("RED", 7), ("GREEN", 8), ("BLUE", 9), ("DURATION", 10), ("TOUCH_TRIGGERED", 11),
+    ("PLAYER_COLOR_1", 15), ("PLAYER_COLOR_2", 16), ("BLENDING", 17), ("EDITOR_LAYER_1", 20),
+    ("COLOR", 21), ("COLOR_2", 22), ("TARGET_COLOR", 23), ("Z_LAYER", 24), ("Z_ORDER", 25),
+    ("MOVE_X", 28), ("MOVE_Y", 29), ("EASING", 30), ("TEXT", 31), ("SCALE", 32),
+    ("GROUP_PARENT", 34), ("OPACITY", 35), ("ACTIVE_TRIGGER", 36), ("FADE_IN", 45),
+    ("HOLD", 46), ("FADE_OUT", 47), ("PULSE_HSV", 48), ("TARGET", 51), ("TARGET_TYPE", 52),
+    ("ACTIVATE_GROUP", 56), ("GROUPS", 57), ("LOCK_TO_PLAYER_X", 58), ("LOCK_TO_PLAYER_Y", 59),
+    ("COPY_OPACITY", 60), ("EDITOR_LAYER_2", 61), ("SPAWN_TRIGGERED", 62), ("SPAWN_DELAY", 63),
+    ("DONT_FADE", 64), ("DONT_ENTER", 67), ("ROTATE_DEGREES", 68), ("TIMES_360", 69),
+    ("LOCK_OBJECT_ROTATION", 70), ("CENTER", 71), ("X_MOD", 72), ("Y_MOD", 73), ("STRENGTH", 75),
+    ("COUNT", 77), ("SUBTRACT_COUNT", 78), ("ITEM", 80), ("INTERVAL", 84), ("EASING_RATE", 85),
+    ("EXCLUSIVE", 86), ("MULTI_TRIGGER", 87), ("ITEM_2", 95), ("HIGH_DETAIL", 103),
+    ("SCALE_X", 128), ("SCALE_Y", 129),
+];
+
+// Object IDs, available in scripts as ID_<NAME> (from SPWN's constants.spwn).
+const IDS: &[(&str, u32)] = &[
+    ("MOVE", 901), ("ROTATE", 1346), ("ANIMATE", 1585), ("PULSE", 1006), ("COUNT", 1611),
+    ("ALPHA", 1007), ("TOGGLE", 1049), ("FOLLOW", 1347), ("SPAWN", 1268), ("STOP", 1616),
+    ("TOUCH", 1595), ("INSTANT_COUNT", 1811), ("ON_DEATH", 1812), ("FOLLOW_PLAYER_Y", 1814),
+    ("COLLISION", 1815), ("PICKUP", 1817), ("BG_EFFECT_ON", 1818), ("BG_EFFECT_OFF", 1819),
+    ("SHAKE", 1520), ("COLOR", 899), ("ENABLE_TRAIL", 32), ("DISABLE_TRAIL", 33), ("HIDE", 1612),
+    ("SHOW", 1613), ("GRAVITY_DOWN", 10), ("GRAVITY_UP", 11), ("CUBE", 12), ("SHIP", 13),
+    ("BALL", 47), ("UFO", 111), ("WAVE", 660), ("ROBOT", 745), ("SPIDER", 1331),
+    ("MIRROR_ON", 45), ("MIRROR_OFF", 46), ("SIZE_NORMAL", 99), ("SIZE_MINI", 101),
+    ("DUAL_ON", 286), ("DUAL_OFF", 287), ("TELEPORT", 747), ("SPEED_YELLOW", 200),
+    ("SPEED_BLUE", 201), ("SPEED_GREEN", 202), ("SPEED_PINK", 203), ("SPEED_RED", 1334),
+    ("COLLISION_BLOCK", 1816), ("TEXT", 914), ("USER_COIN", 1329), ("ITEM_DISPLAY", 1615),
 ];
 
 type R<X> = Result<X, String>;
@@ -91,6 +127,12 @@ impl Interp {
     fn new() -> Self {
         let mut globals = Scope::new();
         globals.insert("PI".to_string(), Value::Num(std::f64::consts::PI));
+        for (name, key) in PROPS {
+            globals.insert(format!("P_{name}"), Value::Num(*key as f64));
+        }
+        for (name, id) in IDS {
+            globals.insert(format!("ID_{name}"), Value::Num(*id as f64));
+        }
         Interp {
             funcs: HashMap::new(),
             frames: vec![vec![globals]],
@@ -376,6 +418,7 @@ impl Interp {
             return Err(err(line, format!("too many objects (limit {MAX_OBJECTS})")));
         }
         let mut o = Obj::default();
+        o.line = line;
         for (k, v) in props {
             o.props.insert(*k, v.clone());
         }
@@ -489,6 +532,71 @@ impl Interp {
                 want(4)?;
                 let on = if a[3].truthy() { 1.0 } else { 0.0 };
                 self.trigger(1049, n(0)?, n(1)?, &[(51, n(2)?), (56, on)], line)
+            }
+            // trigger(id, x, y): any trigger; fill in its properties with set(handle, P_..., value)
+            "trigger" => {
+                want(3)?;
+                let id = n(0)?;
+                if id < 1.0 || id.fract() != 0.0 {
+                    return Err(err(line, "trigger(): the object id must be a whole number"));
+                }
+                self.trigger(id as u32, n(1)?, n(2)?, &[], line)
+            }
+            // pulse(x, y, color_channel, r, g, b, fade_in, hold, fade_out)
+            "pulse" => {
+                want(9)?;
+                self.trigger(
+                    1006,
+                    n(0)?,
+                    n(1)?,
+                    &[
+                        (51, n(2)?),
+                        (7, n(3)?),
+                        (8, n(4)?),
+                        (9, n(5)?),
+                        (45, n(6)?),
+                        (46, n(7)?),
+                        (47, n(8)?),
+                    ],
+                    line,
+                )
+            }
+            // color_trigger(x, y, color_channel, r, g, b, seconds)
+            "color_trigger" => {
+                want(7)?;
+                self.trigger(
+                    899,
+                    n(0)?,
+                    n(1)?,
+                    &[(23, n(2)?), (7, n(3)?), (8, n(4)?), (9, n(5)?), (10, n(6)?)],
+                    line,
+                )
+            }
+            // spawn(x, y, target_group, delay_seconds)
+            "spawn" => {
+                want(4)?;
+                self.trigger(1268, n(0)?, n(1)?, &[(51, n(2)?), (63, n(3)?)], line)
+            }
+            // rotate(x, y, target_group, center_group, degrees, seconds)
+            "rotate" => {
+                want(6)?;
+                self.trigger(
+                    1346,
+                    n(0)?,
+                    n(1)?,
+                    &[(51, n(2)?), (71, n(3)?), (68, n(4)?), (10, n(5)?)],
+                    line,
+                )
+            }
+            // shake(x, y, strength, interval, seconds)
+            "shake" => {
+                want(5)?;
+                self.trigger(1520, n(0)?, n(1)?, &[(75, n(2)?), (84, n(3)?), (10, n(4)?)], line)
+            }
+            // stop(x, y, target_group)
+            "stop" => {
+                want(3)?;
+                self.trigger(1616, n(0)?, n(1)?, &[(51, n(2)?)], line)
             }
             "print" => {
                 let s: Vec<String> = a.iter().map(|v| v.to_string()).collect();
@@ -621,5 +729,50 @@ mod tests {
     fn errors_carry_line_numbers() {
         let e = run("let a = 1\nprint(b)").unwrap_err();
         assert!(e.starts_with("line 2:"), "{e}");
+    }
+
+    #[test]
+    fn more_triggers() {
+        let o = run("spawn(100, 15, 2, 0.5)\nrotate(130, 15, 2, 3, 90, 1)\nstop(160, 15, 2)").unwrap();
+        assert_eq!(
+            o.objects_string(),
+            "1,1268,2,100,3,15,36,1,51,2,63,0.5;\
+             1,1346,2,130,3,15,10,1,36,1,51,2,68,90,71,3;\
+             1,1616,2,160,3,15,36,1,51,2;"
+        );
+        let o = run("pulse(0, 0, 4, 255, 0, 0, 0.1, 0.2, 0.3)").unwrap();
+        assert_eq!(
+            o.objects_string(),
+            "1,1006,2,0,3,0,7,255,8,0,9,0,36,1,45,0.1,46,0.2,47,0.3,51,4;"
+        );
+        let o = run("color_trigger(0, 0, 5, 10, 20, 30, 2)\nshake(0, 0, 3, 0, 1)").unwrap();
+        assert_eq!(
+            o.objects_string(),
+            "1,899,2,0,3,0,7,10,8,20,9,30,10,2,23,5,36,1;\
+             1,1520,2,0,3,0,10,1,36,1,75,3,84,0;"
+        );
+    }
+
+    #[test]
+    fn generic_trigger_and_constants() {
+        let o = run("let h = trigger(ID_COUNT, 0, 0)\nset(h, P_ITEM, 5)\nprint(P_TARGET, ID_MOVE)").unwrap();
+        assert_eq!(o.objects_string(), "1,1611,2,0,3,0,36,1,80,5;");
+        assert_eq!(o.logs[0], "51 901");
+    }
+
+    #[test]
+    fn objects_remember_their_script_line() {
+        let o = run("\nobj(1, 0, 0)\n\nobj(1, 30, 0)").unwrap();
+        assert_eq!(o.objects[0].line, 2);
+        assert_eq!(o.objects[1].line, 4);
+        let j = o.to_json();
+        assert!(j.contains("\"lines\":[2,4]"), "{j}");
+        assert!(j.starts_with("{\"ok\":true"), "{j}");
+    }
+
+    #[test]
+    fn preview_json_reports_errors() {
+        let j = crate::preview_json("obj(1, 0)");
+        assert!(j.starts_with("{\"ok\":false,\"error\":\"line 1:"), "{j}");
     }
 }

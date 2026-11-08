@@ -422,6 +422,37 @@ fn read_k4(s: &str) -> Result<K4, String> {
     }
 }
 
+/// The level header and the object records (everything after the first `;`) of a .gdlvl file.
+pub fn level_objects(file: &[u8]) -> Result<(String, String), String> {
+    let (_, text) = unwrap_file(file)?;
+    let (a, b) = find_k4(&text).ok_or_else(|| {
+        "couldn't find the level string (<k>k4</k>) in this file".to_string()
+    })?;
+    let k = read_k4(&text[a..b])?;
+    Ok(match k.raw.split_once(';') {
+        Some((h, rest)) => (h.to_string(), rest.to_string()),
+        None => (k.raw, String::new()),
+    })
+}
+
+/// One object per line: index, object id, and the raw key,value record. Handy for
+/// finding the IDs and property keys of anything you placed in the editor.
+pub fn list_objects(file: &[u8]) -> Result<String, String> {
+    let (header, objects) = level_objects(file)?;
+    let mut out = format!("header: {header}\n");
+    for (i, rec) in objects.split(';').filter(|r| !r.is_empty()).enumerate() {
+        let parts: Vec<&str> = rec.split(',').collect();
+        let id = parts
+            .chunks(2)
+            .find(|c| c[0] == "1")
+            .and_then(|c| c.get(1))
+            .copied()
+            .unwrap_or("?");
+        out.push_str(&format!("{i:>5}  id {id:<5}  {rec}\n"));
+    }
+    Ok(out)
+}
+
 /// Human-readable dump of a .gdlvl file: layers, XML, and the level-string summary.
 pub fn inspect(file: &[u8]) -> Result<String, String> {
     let (wrap, text) = unwrap_file(file)?;

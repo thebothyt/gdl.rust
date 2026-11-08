@@ -28,3 +28,22 @@ pub fn patch(file: &[u8], script: &str) -> Result<Vec<u8>, JsValue> {
 pub fn inspect(file: &[u8]) -> Result<String, JsValue> {
     gdl_core::codec::inspect(file).map_err(|e| JsValue::from_str(&e))
 }
+
+/// Run a script for the visual preview. Always returns JSON: {"ok":true,"objects":"...","lines":[...],"logs":[...]}
+/// or {"ok":false,"error":"line N: ..."}.
+#[wasm_bindgen]
+pub fn preview(script: &str) -> String {
+    gdl_core::preview_json(script)
+}
+
+/// Objects already in an uploaded .gdlvl, as JSON, for drawing under the script's objects.
+#[wasm_bindgen]
+pub fn base(file: &[u8]) -> String {
+    gdl_core::base_json(file)
+}
+
+/// One object per line (id + raw properties) for looking up IDs and property keys.
+#[wasm_bindgen]
+pub fn objects(file: &[u8]) -> Result<String, JsValue> {
+    gdl_core::codec::list_objects(file).map_err(|e| JsValue::from_str(&e))
+}

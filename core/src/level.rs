@@ -5,6 +5,8 @@ use std::fmt;
 #[derive(Debug, Clone, Default)]
 pub struct Obj {
     pub props: BTreeMap<u32, String>,
+    /// Script line that created this object (0 if unknown). Not written to the level.
+    pub line: usize,
 }
 
 impl fmt::Display for Obj {
@@ -37,6 +39,51 @@ impl RunOutput {
         }
         s
     }
+
+    /// JSON for the visual preview: the object string, the script line of each object,
+    /// and anything the script printed.
+    pub fn to_json(&self) -> String {
+        let mut s = String::from("{\"ok\":true,\"logs\":[");
+        for (i, l) in self.logs.iter().enumerate() {
+            if i > 0 {
+                s.push(',');
+            }
+            s.push_str(&json_escape(l));
+        }
+        s.push_str("],\"lines\":[");
+        for (i, o) in self.objects.iter().enumerate() {
+            if i > 0 {
+                s.push(',');
+            }
+            s.push_str(&o.line.to_string());
+        }
+        s.push_str("],\"objects\":");
+        s.push_str(&json_escape(&self.objects_string()));
+        s.push('}');
+        s
+    }
+}
+
+pub fn json_escape(s: &str) -> String {
+    let mut o = String::with_capacity(s.len() + 2);
+    o.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => o.push_str("\\\""),
+            '\\' => o.push_str("\\\\"),
+            '\n' => o.push_str("\\n"),
+            '\r' => o.push_str("\\r"),
+            '\t' => o.push_str("\\t"),
+            c if (c as u32) < 0x20 => o.push_str(&format!("\\u{:04x}", c as u32)),
+            c => o.push(c),
+        }
+    }
+    o.push('"');
+    o
+}
+
+pub fn error_json(msg: &str) -> String {
+    format!("{{\"ok\":false,\"error\":{}}}", json_escape(msg))
 }
 
 /// Whole numbers print without a decimal point; others get up to 4 decimals.
