@@ -271,7 +271,13 @@ impl Parser {
                     let mut args = Vec::new();
                     if self.peek().t != T::RParen {
                         loop {
-                            args.push(self.expr()?);
+                            if let (T::Ident(k), T::Assign) = (self.peek().t.clone(), self.peek_at(1).clone()) {
+                                self.pos += 2;
+                                let v = self.expr()?;
+                                args.push(Expr::Named(k, Box::new(v)));
+                            } else {
+                                args.push(self.expr()?);
+                            }
                             if self.peek().t == T::Comma {
                                 self.pos += 1;
                                 if self.peek().t == T::RParen {

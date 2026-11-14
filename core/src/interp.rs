@@ -10,10 +10,15 @@ const MAX_OBJECTS: usize = 150_000;
 const MAX_DEPTH: usize = 100;
 
 pub const BUILTINS: &[&str] = &[
-    "obj", "set", "add_group", "group", "color", "move", "alpha", "toggle", "trigger", "pulse",
-    "color_trigger", "spawn", "rotate", "shake", "stop", "print", "floor", "ceil", "round", "abs",
-    "sqrt", "sin", "cos", "min", "max", "pow",
+    "obj", "set", "add_group", "group", "color", "trigger", "block", "rect", "set_rotation",
+    "set_scale", "flip_x", "flip_y", "set_z", "set_color", "set_detail_color", "print", "floor",
+    "ceil", "round", "abs", "sqrt", "sin", "cos", "min", "max", "pow",
 ];
+
+/// True for anything a script can't redefine: core builtins and every trigger.
+pub fn is_builtin(name: &str) -> bool {
+    BUILTINS.contains(&name) || crate::triggers::find(name).is_some()
+}
 
 // Property keys, available in scripts as P_<NAME>. Cross-checked against the property
 // tables in SPWN (constants.spwn) and the gdlib crate (lookup.rs). Item/counter keys
@@ -99,7 +104,15 @@ struct Interp {
 }
 
 pub fn execute(prog: &[Stmt]) -> R<RunOutput> {
+    execute_with(prog, 1, 1)
+}
+
+/// Like [`execute`], but `group()` and `color()` start counting at the given ids. Used when a
+/// project already contains objects, so new groups don't collide with existing ones.
+pub fn execute_with(prog: &[Stmt], first_group: u32, first_color: u32) -> R<RunOutput> {
     let mut it = Interp::new();
+    it.next_group = first_group.max(1);
+    it.next_color = first_color.max(1);
     // hoist top-level functions so they can be called before their definition
     for s in prog {
         if let StmtKind::Fn(d) = &s.kind {
@@ -123,6 +136,35 @@ fn set_in(frame: &mut [Scope], name: &str, v: Value) -> Option<Value> {
     Some(v)
 }
 
+/// Turn positional + named call arguments into one ordered list for a user function.
+fn bind_named(fname: &str, params: &[&str], vals: Vec<Value>, named: Vec<(String, Value)>, line: usize) -> R<Vec<Value>> {
+    if named.is_empty() {
+        return Ok(vals);
+    }
+    let mut slots: Vec<Option<Value>> = vec![None; params.len()];
+    if vals.len() > params.len() {
+        return Err(err(line, format!("{fname}() takes {} argument(s), got {}", params.len(), vals.len())));
+    }
+    for (i, v) in vals.into_iter().enumerate() {
+        slots[i] = Some(v);
+    }
+    for (k, v) in named {
+        let i = params
+            .iter()
+            .position(|p| *p == k)
+            .ok_or_else(|| err(line, format!("{fname}() has no parameter '{k}'")))?;
+        if slots[i].is_some() {
+            return Err(err(line, format!("{fname}(): '{k}' given twice")));
+        }
+        slots[i] = Some(v);
+    }
+    slots
+        .into_iter()
+        .enumerate()
+        .map(|(i, s)| s.ok_or_else(|| err(line, format!("{fname}() is missing '{}'", params[i]))))
+        .collect()
+}
+
 impl Interp {
     fn new() -> Self {
         let mut globals = Scope::new();
@@ -132,6 +174,12 @@ impl Interp {
         }
         for (name, id) in IDS {
             globals.insert(format!("ID_{name}"), Value::Num(*id as f64));
+        }
+        for (name, v) in crate::triggers::CONSTS {
+            globals.insert(name.to_string(), Value::Num(*v));
+        }
+        for b in crate::blocks::BLOCKS {
+            globals.insert(format!("B_{}", b.name.to_uppercase()), Value::Num(b.id as f64));
         }
         Interp {
             funcs: HashMap::new(),
@@ -145,7 +193,7 @@ impl Interp {
     }
 
     fn define_fn(&mut self, d: &Rc<FnDecl>, line: usize) -> R<()> {
-        if BUILTINS.contains(&d.name.as_str()) {
+        if is_builtin(&d.name) {
             return Err(err(line, format!("'{}' is a builtin and can't be redefined", d.name)));
         }
         self.funcs.insert(d.name.clone(), d.clone());
@@ -319,6 +367,10 @@ impl Interp {
             Expr::Not(x) => Ok(Value::Bool(!self.eval(x, line)?.truthy())),
             Expr::Bin(op, a, b) => self.eval_bin(*op, a, b, line),
             Expr::Call(name, args) => self.call(name, args, line),
+            Expr::Named(k, _) => Err(err(
+                line,
+                format!("'{k} = ...' is only allowed inside a call's argument list"),
+            )),
         }
     }
 
@@ -379,13 +431,115 @@ impl Interp {
 
     fn call(&mut self, name: &str, args: &[Expr], line: usize) -> R<Value> {
         let mut vals = Vec::with_capacity(args.len());
+        let mut named: Vec<(String, Value)> = Vec::new();
         for a in args {
-            vals.push(self.eval(a, line)?);
+            if let Expr::Named(k, e) = a {
+                if named.iter().any(|(n, _)| n == k) {
+                    return Err(err(line, format!("{name}(): '{k}' given twice")));
+                }
+                let v = self.eval(e, line)?;
+                named.push((k.clone(), v));
+            } else {
+                if !named.is_empty() {
+                    return Err(err(line, format!("{name}(): positional arguments can't follow named ones")));
+                }
+                vals.push(self.eval(a, line)?);
+            }
         }
         if let Some(f) = self.funcs.get(name).cloned() {
+            let vals = bind_named(&f.name, &f.params.iter().map(|p| p.as_str()).collect::<Vec<_>>(), vals, named, line)?;
             return self.call_user(&f, vals, line);
         }
+        if let Some(def) = crate::triggers::find(name) {
+            return self.call_def(def, vals, named, line);
+        }
+        if !named.is_empty() {
+            return Err(err(line, format!("{name}() doesn't take named arguments")));
+        }
         self.builtin(name, vals, line)
+    }
+
+    /// Build a trigger object from its table entry: x, y, then the table's arguments, filled
+    /// by position and/or by name.
+    fn call_def(
+        &mut self,
+        def: &'static crate::triggers::Def,
+        vals: Vec<Value>,
+        named: Vec<(String, Value)>,
+        line: usize,
+    ) -> R<Value> {
+        use crate::triggers::{COMMON, K};
+        let mut slots: Vec<(&str, Option<Value>)> = vec![("x", None), ("y", None)];
+        for a in def.args {
+            slots.push((a.name, None));
+        }
+        let n_pos = slots.len();
+        if vals.len() > n_pos {
+            return Err(err(line, format!("{}() takes at most {} arguments, got {}", def.name, n_pos, vals.len())));
+        }
+        for (i, v) in vals.into_iter().enumerate() {
+            slots[i].1 = Some(v);
+        }
+        let mut common: Vec<(&crate::triggers::Arg, Value)> = Vec::new();
+        for (k, v) in named {
+            if let Some(slot) = slots.iter_mut().find(|(n, _)| *n == k) {
+                if slot.1.is_some() {
+                    return Err(err(line, format!("{}(): '{k}' given twice", def.name)));
+                }
+                slot.1 = Some(v);
+            } else if let Some(c) = COMMON.iter().find(|c| c.name == k) {
+                common.push((c, v));
+            } else {
+                let valid: Vec<&str> = slots.iter().map(|(n, _)| *n).chain(COMMON.iter().map(|c| c.name)).collect();
+                return Err(err(line, format!("{}() has no argument '{k}' (valid: {})", def.name, valid.join(", "))));
+            }
+        }
+        let num = |v: &Option<Value>, what: &str| -> R<f64> {
+            match v {
+                Some(Value::Num(n)) => Ok(*n),
+                _ => Err(err(line, format!("{}(): '{what}' must be a number", def.name))),
+            }
+        };
+        let x = num(&slots[0].1, "x").map_err(|_| err(line, format!("{}() needs x and y positions", def.name)))?;
+        let y = num(&slots[1].1, "y").map_err(|_| err(line, format!("{}() needs x and y positions", def.name)))?;
+        let mut props: Vec<(u32, String)> = vec![
+            (1, def.id.to_string()),
+            (2, fmt_num(x)),
+            (3, fmt_num(y)),
+            (36, "1".to_string()),
+        ];
+        for (k, v) in def.fixed {
+            props.push((*k, v.to_string()));
+        }
+        let convert = |a: &crate::triggers::Arg, v: &Value| -> R<String> {
+            match (a.kind, v) {
+                (K::Num, Value::Num(n)) => Ok(fmt_num(*n)),
+                (K::Num, Value::Bool(b)) => Ok(if *b { "1" } else { "0" }.to_string()),
+                (K::Bool, v) => Ok(if v.truthy() { "1" } else { "0" }.to_string()),
+                (K::Str, Value::Str(s)) => Ok(s.clone()),
+                (K::Str, Value::Num(n)) => Ok(fmt_num(*n)),
+                _ => Err(err(line, format!("{}(): '{}' expects {}, got {v}", def.name, a.name,
+                    match a.kind { K::Num => "a number", K::Bool => "true/false", K::Str => "text" }))),
+            }
+        };
+        for (i, a) in def.args.iter().enumerate() {
+            match &slots[i + 2].1 {
+                Some(v) => {
+                    if let Some((k, val)) = a.also {
+                        props.push((k, val.to_string()));
+                    }
+                    props.push((a.key, convert(a, v)?));
+                }
+                None if !a.optional => {
+                    return Err(err(line, format!("{}() is missing '{}' ({})", def.name, a.name, a.doc)));
+                }
+                None => {}
+            }
+        }
+        for (c, v) in &common {
+            props.push((c.key, convert(c, v)?));
+        }
+        Ok(Value::Num(self.push_obj(&props, line)?))
     }
 
     fn call_user(&mut self, f: &Rc<FnDecl>, vals: Vec<Value>, line: usize) -> R<Value> {
@@ -445,6 +599,12 @@ impl Interp {
         } else {
             Err(err(line, format!("{name}(): {} is not a valid object handle", fmt_num(x))))
         }
+    }
+
+    fn set_prop(&mut self, h: f64, key: u32, val: String, name: &str, line: usize) -> R<Value> {
+        let h = self.handle(h, name, line)?;
+        self.objects[h].props.insert(key, val);
+        Ok(Value::Nil)
     }
 
     fn builtin(&mut self, name: &str, a: Vec<Value>, line: usize) -> R<Value> {
@@ -511,29 +671,7 @@ impl Interp {
                 self.next_color += 1;
                 Ok(Value::Num(c as f64))
             }
-            // move(x, y, target_group, dx, dy, seconds)
-            "move" => {
-                want(6)?;
-                self.trigger(
-                    901,
-                    n(0)?,
-                    n(1)?,
-                    &[(51, n(2)?), (28, n(3)?), (29, n(4)?), (10, n(5)?)],
-                    line,
-                )
-            }
-            // alpha(x, y, target_group, opacity 0..1, seconds)
-            "alpha" => {
-                want(5)?;
-                self.trigger(1007, n(0)?, n(1)?, &[(51, n(2)?), (35, n(3)?), (10, n(4)?)], line)
-            }
-            // toggle(x, y, target_group, on)
-            "toggle" => {
-                want(4)?;
-                let on = if a[3].truthy() { 1.0 } else { 0.0 };
-                self.trigger(1049, n(0)?, n(1)?, &[(51, n(2)?), (56, on)], line)
-            }
-            // trigger(id, x, y): any trigger; fill in its properties with set(handle, P_..., value)
+            // trigger(id, x, y): any trigger by object id; fill in its properties with set()
             "trigger" => {
                 want(3)?;
                 let id = n(0)?;
@@ -542,61 +680,71 @@ impl Interp {
                 }
                 self.trigger(id as u32, n(1)?, n(2)?, &[], line)
             }
-            // pulse(x, y, color_channel, r, g, b, fade_in, hold, fade_out)
-            "pulse" => {
-                want(9)?;
-                self.trigger(
-                    1006,
-                    n(0)?,
-                    n(1)?,
-                    &[
-                        (51, n(2)?),
-                        (7, n(3)?),
-                        (8, n(4)?),
-                        (9, n(5)?),
-                        (45, n(6)?),
-                        (46, n(7)?),
-                        (47, n(8)?),
-                    ],
-                    line,
-                )
-            }
-            // color_trigger(x, y, color_channel, r, g, b, seconds)
-            "color_trigger" => {
-                want(7)?;
-                self.trigger(
-                    899,
-                    n(0)?,
-                    n(1)?,
-                    &[(23, n(2)?), (7, n(3)?), (8, n(4)?), (9, n(5)?), (10, n(6)?)],
-                    line,
-                )
-            }
-            // spawn(x, y, target_group, delay_seconds)
-            "spawn" => {
-                want(4)?;
-                self.trigger(1268, n(0)?, n(1)?, &[(51, n(2)?), (63, n(3)?)], line)
-            }
-            // rotate(x, y, target_group, center_group, degrees, seconds)
-            "rotate" => {
-                want(6)?;
-                self.trigger(
-                    1346,
-                    n(0)?,
-                    n(1)?,
-                    &[(51, n(2)?), (71, n(3)?), (68, n(4)?), (10, n(5)?)],
-                    line,
-                )
-            }
-            // shake(x, y, strength, interval, seconds)
-            "shake" => {
-                want(5)?;
-                self.trigger(1520, n(0)?, n(1)?, &[(75, n(2)?), (84, n(3)?), (10, n(4)?)], line)
-            }
-            // stop(x, y, target_group)
-            "stop" => {
+            // block("spike", x, y): a catalog block by name (see `gdl blocks`)
+            "block" => {
                 want(3)?;
-                self.trigger(1616, n(0)?, n(1)?, &[(51, n(2)?)], line)
+                let bname = match &a[0] {
+                    Value::Str(s) => s.clone(),
+                    _ => return Err(err(line, "block(): the first argument must be a name in quotes, e.g. block(\"spike\", 0, 0)")),
+                };
+                let blk = crate::blocks::find(&bname).ok_or_else(|| {
+                    err(line, format!("block(): unknown block '{bname}' (run `gdl blocks` for the list)"))
+                })?;
+                let props = [(1, blk.id.to_string()), (2, fmt_num(n(1)?)), (3, fmt_num(n(2)?))];
+                Ok(Value::Num(self.push_obj(&props, line)?))
+            }
+            // rect(id, x, y, w, h): fill a w-by-h grid (30 units apart); returns how many were placed
+            "rect" => {
+                want(5)?;
+                let (id, x, y, w, h) = (n(0)?, n(1)?, n(2)?, n(3)?, n(4)?);
+                if id < 1.0 || id.fract() != 0.0 || w < 0.0 || h < 0.0 || w.fract() != 0.0 || h.fract() != 0.0 {
+                    return Err(err(line, "rect(): id, w and h must be whole numbers (w and h >= 0)"));
+                }
+                if w * h > MAX_OBJECTS as f64 {
+                    return Err(err(line, format!("too many objects (limit {MAX_OBJECTS})")));
+                }
+                for j in 0..h as u32 {
+                    for i in 0..w as u32 {
+                        self.tick(line)?;
+                        let props = [
+                            (1, fmt_num(id)),
+                            (2, fmt_num(x + i as f64 * 30.0)),
+                            (3, fmt_num(y + j as f64 * 30.0)),
+                        ];
+                        self.push_obj(&props, line)?;
+                    }
+                }
+                Ok(Value::Num(w * h))
+            }
+            "set_rotation" => {
+                want(2)?;
+                self.set_prop(n(0)?, 6, fmt_num(n(1)?), name, line)
+            }
+            "set_scale" => {
+                want(2)?;
+                self.set_prop(n(0)?, 32, fmt_num(n(1)?), name, line)
+            }
+            "flip_x" => {
+                want(1)?;
+                self.set_prop(n(0)?, 4, "1".into(), name, line)
+            }
+            "flip_y" => {
+                want(1)?;
+                self.set_prop(n(0)?, 5, "1".into(), name, line)
+            }
+            // set_z(handle, layer, order)
+            "set_z" => {
+                want(3)?;
+                self.set_prop(n(0)?, 24, fmt_num(n(1)?), name, line)?;
+                self.set_prop(n(0)?, 25, fmt_num(n(2)?), name, line)
+            }
+            "set_color" => {
+                want(2)?;
+                self.set_prop(n(0)?, 21, fmt_num(n(1)?), name, line)
+            }
+            "set_detail_color" => {
+                want(2)?;
+                self.set_prop(n(0)?, 22, fmt_num(n(1)?), name, line)
             }
             "print" => {
                 let s: Vec<String> = a.iter().map(|v| v.to_string()).collect();
@@ -774,5 +922,113 @@ mod tests {
     fn preview_json_reports_errors() {
         let j = crate::preview_json("obj(1, 0)");
         assert!(j.starts_with("{\"ok\":false,\"error\":\"line 1:"), "{j}");
+    }
+
+    // ---- 2.2 triggers, named arguments, blocks ----
+
+    #[test]
+    fn pickup_with_named_option() {
+        let o = run("pickup(300, 15, 1, 2, mode = PICKUP_MULTIPLY)").unwrap();
+        assert_eq!(o.objects_string(), "1,1817,2,300,3,15,36,1,77,2,80,1,88,1,449,1;");
+    }
+
+    #[test]
+    fn item_edit_adds_item_type_and_defaults() {
+        let o = run("item_edit(0, 0, 5, OP_ADD, 1, item1 = 2)").unwrap();
+        assert_eq!(
+            o.objects_string(),
+            "1,3619,2,0,3,0,36,1,51,5,80,2,476,1,478,1,479,1,480,1,481,1,482,3;"
+        );
+    }
+
+    #[test]
+    fn item_compare_sets_both_branches() {
+        let o = run("item_compare(0, 0, 1, 2, CMP_GTE, 10, 11)").unwrap();
+        assert_eq!(
+            o.objects_string(),
+            "1,3620,2,0,3,0,36,1,51,10,71,11,80,1,95,2,476,1,477,1,479,1,480,3,481,3,482,2,483,1;"
+        );
+    }
+
+    #[test]
+    fn gradient_trigger() {
+        let o = run("gradient(0, 0, 1, 2, 3, 4, 5)").unwrap();
+        assert_eq!(
+            o.objects_string(),
+            "1,2903,2,0,3,0,36,1,202,1,203,2,204,3,205,4,206,5,209,1,456,1;"
+        );
+    }
+
+    #[test]
+    fn easing_and_common_options() {
+        let o = run("move(0, 0, 1, 0, 30, 2, easing = EASE_IN_OUT, multi_triggered = true)").unwrap();
+        let s = o.objects_string();
+        assert!(s.contains(",30,1,"), "{s}");
+        assert!(s.contains(",87,1"), "{s}");
+    }
+
+    #[test]
+    fn toggle_and_bool_args() {
+        let o = run("toggle(0, 0, 4, false)\ntoggle(30, 0, 4, true)").unwrap();
+        assert_eq!(
+            o.objects_string(),
+            "1,1049,2,0,3,0,36,1,51,4,56,0;1,1049,2,30,3,0,36,1,51,4,56,1;"
+        );
+    }
+
+    #[test]
+    fn named_args_for_user_functions() {
+        let o = run("fn f(a, b) { print(a - b) }\nf(b = 1, a = 5)\nf(9, b = 2)").unwrap();
+        assert_eq!(o.logs, vec!["4", "7"]);
+    }
+
+    #[test]
+    fn named_argument_errors_are_clear() {
+        let e = run("pickup(0, 0, 1)").unwrap_err();
+        assert!(e.contains("missing 'count'"), "{e}");
+        let e = run("pickup(0, 0, 1, 2, nope = 1)").unwrap_err();
+        assert!(e.contains("no argument 'nope'") && e.contains("valid:"), "{e}");
+        let e = run("pickup(0, 0, item = 1, 2)").unwrap_err();
+        assert!(e.contains("can't follow"), "{e}");
+        let e = run("pickup(0, 0, 1, 2, count = 3)").unwrap_err();
+        assert!(e.contains("given twice"), "{e}");
+        let e = run("let a = 1\nprint(a, b = 2)").unwrap_err();
+        assert!(e.contains("named arguments"), "{e}");
+        let e = run("fn pickup() { }").unwrap_err();
+        assert!(e.contains("builtin"), "{e}");
+    }
+
+    #[test]
+    fn blocks_by_name_constant_and_rect() {
+        let o = run("block(\"spike\", 15, 15)\nobj(B_SLAB, 45, 15)").unwrap();
+        assert_eq!(o.objects_string(), "1,8,2,15,3,15;1,40,2,45,3,15;");
+        let o = run("print(rect(B_BASIC, 15, 15, 2, 2))").unwrap();
+        assert_eq!(
+            o.objects_string(),
+            "1,1,2,15,3,15;1,1,2,45,3,15;1,1,2,15,3,45;1,1,2,45,3,45;"
+        );
+        assert_eq!(o.logs, vec!["4"]);
+        assert!(run("block(\"nope\", 0, 0)").unwrap_err().contains("gdl blocks"));
+        assert!(run("rect(1, 0, 0, 1000, 1000)").is_err());
+    }
+
+    #[test]
+    fn object_helpers() {
+        let o = run("let b = block(\"basic\", 0, 0)\nset_rotation(b, 90)\nset_scale(b, 0.5)\nflip_x(b)\nset_z(b, 3, 2)\nset_color(b, 5)").unwrap();
+        assert_eq!(o.objects_string(), "1,1,2,0,3,0,4,1,6,90,21,5,24,3,25,2,32,0.5;");
+    }
+
+    #[test]
+    fn every_trigger_in_the_table_can_be_called() {
+        // Calls each trigger with just its required arguments and checks the object id.
+        for d in crate::triggers::TRIGGERS {
+            let mut args = vec!["0".to_string(), "0".to_string()];
+            for a in d.args.iter().filter(|a| !a.optional) {
+                args.push(if a.kind == crate::triggers::K::Str { "\"1.2\"".into() } else { "1".into() });
+            }
+            let src = format!("{}({})", d.name, args.join(", "));
+            let o = run(&src).unwrap_or_else(|e| panic!("{src}: {e}"));
+            assert!(o.objects_string().starts_with(&format!("1,{},2,0,3,0,", d.id)), "{src}");
+        }
     }
 }
