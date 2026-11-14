@@ -32,6 +32,7 @@ export const PAGE = String.raw`<!doctype html>
   #legend i { display: inline-block; width: 10px; height: 10px; margin: 0 4px 0 10px; vertical-align: -1px; border-radius: 2px; }
   #zoom { position: absolute; right: 8px; top: 8px; display: flex; flex-direction: column; gap: 4px; }
   #zoom button { margin: 0; padding: 4px 10px; font-size: 18px; line-height: 1; }
+  .note { font-size: 13px; opacity: .8; margin: 2px 0 8px; }
   #info { font: 13px/1.4 ui-monospace, monospace; background: var(--panel); border-radius: 6px; padding: 8px 10px; min-height: 2.6em; white-space: pre-wrap; word-break: break-all; }
   pre#out { background: var(--panel); padding: 10px; border-radius: 6px; white-space: pre-wrap; word-break: break-word; min-height: 3em; }
 </style></head><body>
@@ -42,6 +43,12 @@ export const PAGE = String.raw`<!doctype html>
 <div class="row">
   <label>Level file (.gdlvl): <input type="file" id="file"></label>
 </div>
+<div class="row">
+  <label>Project (.gdlrust): <input type="file" id="proj" accept=".gdlrust,text/plain"></label>
+  <button id="saveproj">Save .gdlrust</button>
+  <button id="compile">Compile &rarr; .gdlvl</button>
+</div>
+<p class="note">Your work lives in the <b>.gdlrust</b> file you save. This page uses no cookies, localStorage or any other storage, so nothing is kept if you close it without saving.</p>
 <div class="row">
   <button id="inspect">Inspect</button>
   <button id="objects">List objects</button>
@@ -67,7 +74,14 @@ export const PAGE = String.raw`<!doctype html>
   var NAMES = { 901: "MOVE", 1346: "ROTATE", 1585: "ANIM", 1006: "PULSE", 1611: "COUNT", 1007: "ALPHA",
     1049: "TOGGLE", 1347: "FOLLOW", 1268: "SPAWN", 1616: "STOP", 1595: "TOUCH", 1811: "ICOUNT", 1812: "DEATH",
     1814: "FOLLOWY", 1815: "COLL", 1817: "PICKUP", 1818: "BGON", 1819: "BGOFF", 1520: "SHAKE", 899: "COLOR",
-    1612: "HIDE", 1613: "SHOW", 3619: "ITEMEDIT", 3620: "ITEMCMP" };
+    1612: "HIDE", 1613: "SHOW", 3619: "ITEMEDIT", 3620: "ITEMCMP", 2903: "GRADIENT", 1913: "ZOOM", 1914: "STATIC",
+    1916: "OFFSET", 2015: "CAMROT", 2062: "EDGE", 2925: "CAMMODE", 1934: "SONG", 3602: "SFX", 3614: "TIMER",
+    3615: "TIMEEVT", 3617: "TIMECTL", 1912: "RANDOM", 2068: "ADVRAND", 3618: "RESET", 3609: "ICOLL", 2066: "GRAVITY",
+    1935: "TIMEWARP", 3606: "BGSPEED", 3600: "END", 2067: "SCALE", 1917: "REVERSE" };
+
+  // ---- shapes for common non-trigger objects (everything else is a square) ----
+  var SPIKES = { 8: 1, 39: 1, 103: 1, 144: 1, 145: 1 }, SLABS = { 40: 1, 68: 1, 147: 1 },
+      ORBS = { 36: 1, 84: 1, 141: 1 }, PADS = { 35: 1, 67: 1, 140: 1 };
 
   function show(t) { out.textContent = t; }
   function setStatus(t, bad) { status.textContent = t; status.style.color = bad ? "#e5195f" : ""; }
@@ -127,7 +141,14 @@ export const PAGE = String.raw`<!doctype html>
       if (cam.s > 0.5) { ctx.font = "10px system-ui"; ctx.fillStyle = css("--fg"); ctx.textAlign = "center"; ctx.fillText(NAMES[o.id] || String(o.id), p[0], p[1] - r - 3); }
     } else {
       ctx.globalAlpha = o.src === "base" ? 0.55 : 0.9;
-      ctx.fillRect(p[0] - sz / 2, p[1] - sz / 2, sz, sz);
+      var rot = (parseFloat(o.props["6"]) || 0) * Math.PI / 180, h2 = sz / 2;
+      ctx.save(); ctx.translate(p[0], p[1]); ctx.rotate(rot);
+      if (SPIKES[o.id]) { ctx.beginPath(); ctx.moveTo(-h2, h2); ctx.lineTo(0, -h2); ctx.lineTo(h2, h2); ctx.closePath(); ctx.fill(); }
+      else if (SLABS[o.id]) ctx.fillRect(-h2, 0, sz, h2);
+      else if (ORBS[o.id]) { ctx.beginPath(); ctx.arc(0, 0, h2 * 0.7, 0, 6.2832); ctx.fill(); }
+      else if (PADS[o.id]) ctx.fillRect(-h2, h2 * 0.5, sz, h2 * 0.5);
+      else ctx.fillRect(-h2, -h2, sz, sz);
+      ctx.restore();
       ctx.globalAlpha = 1;
     }
     if (isSel) { ctx.lineWidth = 2; ctx.strokeStyle = css("--sel"); ctx.strokeRect(p[0] - half, p[1] - half, half * 2, half * 2); }
@@ -277,6 +298,52 @@ export const PAGE = String.raw`<!doctype html>
       return r.blob().then(function (b) {
         var a = document.createElement("a"); a.href = URL.createObjectURL(b); a.download = name; a.click(); show("Downloaded " + name);
       });
+    });
+  };
+
+  // ---- projects (.gdlrust): the file is the only place your work is kept ----
+  var projEl = $("proj"), projectText = "", projectName = "project", dirty = false;
+  function download(blob, name) {
+    var a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name; a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+  }
+  function projForm() {
+    var fd = new FormData();
+    fd.append("project", projectText); fd.append("script", scriptEl.value); fd.append("name", projectName);
+    if (fileEl.files[0]) fd.append("file", fileEl.files[0]);
+    return fd;
+  }
+  scriptEl.addEventListener("input", function () { dirty = true; });
+  window.addEventListener("beforeunload", function (e) { if (dirty) { e.preventDefault(); e.returnValue = ""; } });
+  fileEl.addEventListener("change", function () {
+    if (!projectText && fileEl.files[0]) projectName = fileEl.files[0].name.replace(/\.gdlvl$/i, "");
+  });
+  projEl.addEventListener("change", function () {
+    var f = projEl.files[0]; if (!f) return;
+    f.text().then(function (t) {
+      return fetch("/api/open", { method: "POST", body: t }).then(function (r) { return r.json(); }).then(function (j) {
+        if (!j.ok) { show("error: " + j.error); return; }
+        projectText = t; projectName = (j.name || f.name.replace(/\.gdlrust$/i, "")).replace(/[^\w .-]/g, "") || "project";
+        scriptEl.value = j.script; base = parseObjects(j.objects, "base"); dirty = false;
+        show("Opened " + f.name + ": " + base.length + " object(s) already in the level, plus your script.");
+        runPreview(true);
+      });
+    });
+  });
+  $("saveproj").onclick = function () {
+    fetch("/api/save", { method: "POST", body: projForm() }).then(function (r) {
+      return r.text().then(function (t) {
+        if (!r.ok) { show("error: " + t); return; }
+        projectText = t; dirty = false;
+        download(new Blob([t], { type: "text/plain" }), projectName + ".gdlrust");
+        show("Saved " + projectName + ".gdlrust");
+      });
+    });
+  };
+  $("compile").onclick = function () {
+    fetch("/api/compile", { method: "POST", body: projForm() }).then(function (r) {
+      if (!r.ok) return r.text().then(function (t) { show("error: " + t); });
+      return r.blob().then(function (b) { download(b, projectName + ".compiled.gdlvl"); show("Compiled -> " + projectName + ".compiled.gdlvl"); });
     });
   };
 

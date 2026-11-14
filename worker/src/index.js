@@ -7,9 +7,17 @@
 //   POST /api/inspect  multipart: file           -> plain-text layout dump
 //   POST /api/objects  multipart: file           -> one line per object (id + raw properties)
 //   POST /api/patch    multipart: file + script  -> patched .gdlvl download
+//   POST /api/open     body = .gdlrust text      -> JSON {ok, name, script, header, objects}
+//   POST /api/save     multipart: project, script, name, [file] -> .gdlrust text
+//   POST /api/compile  multipart: project, script, name, [file] -> compiled .gdlvl download
+//
+// Nothing is stored server-side or in the browser: no cookies, no KV, no storage. Projects live
+// in the .gdlrust file the user saves.
 
 import wasmModule from "../pkg/gdl_wasm_bg.wasm";
-import { initSync, check, patch, inspect, preview, base, objects } from "../pkg/gdl_wasm.js";
+import {
+  initSync, check, patch, inspect, preview, base, objects, open_project, save_project, compile_project,
+} from "../pkg/gdl_wasm.js";
 import { PAGE, DEMO } from "./page.js";
 
 initSync({ module: wasmModule });
@@ -29,6 +37,27 @@ async function readFile(form) {
   if (!(file instanceof File)) throw new Error("no file uploaded");
   if (file.size > MAX_FILE) throw new Error("file too large (10 MB max)");
   return new Uint8Array(await file.arrayBuffer());
+}
+
+// project form fields: project text (may be empty), script, name, optional level file
+async function readProjectForm(request) {
+  const form = await request.formData();
+  const field = (k) => {
+    const v = form.get(k);
+    return typeof v === "string" ? v : "";
+  };
+  const script = field("script");
+  if (script.length > MAX_SCRIPT) throw new Error("script too large (200 KB max)");
+  const project = field("project");
+  if (project.length > MAX_FILE) throw new Error("project too large (10 MB max)");
+  const f = form.get("file");
+  let level;
+  if (f instanceof File && f.size > 0) {
+    if (f.size > MAX_FILE) throw new Error("file too large (10 MB max)");
+    level = new Uint8Array(await f.arrayBuffer());
+  }
+  const name = field("name").replace(/[^\w .-]/g, "").slice(0, 80) || "project";
+  return { project, script, name, level };
 }
 
 async function readScript(request) {
@@ -67,6 +96,25 @@ export default {
             headers: {
               "content-type": "application/octet-stream",
               "content-disposition": 'attachment; filename="level.patched.gdlvl"',
+            },
+          });
+        }
+        case "/api/open": {
+          const t = await request.text();
+          if (t.length > MAX_FILE) throw new Error("project too large (10 MB max)");
+          return json(open_project(t));
+        }
+        case "/api/save": {
+          const f = await readProjectForm(request);
+          return text(save_project(f.project, f.script, f.name, f.level));
+        }
+        case "/api/compile": {
+          const f = await readProjectForm(request);
+          const out = compile_project(f.project, f.script, f.name, f.level);
+          return new Response(out, {
+            headers: {
+              "content-type": "application/octet-stream",
+              "content-disposition": 'attachment; filename="' + f.name + '.compiled.gdlvl"',
             },
           });
         }
