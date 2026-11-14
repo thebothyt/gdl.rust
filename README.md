@@ -1,119 +1,141 @@
 # gdl.rust
 
-A small scripting language, written in Rust, that generates Geometry Dash level
-objects and writes them into a `.gdlvl` file. The core has zero dependencies, so the
-same code runs as a CLI and inside a Cloudflare Worker (compiled to WASM).
+**Write Geometry Dash levels as code.** `gdl` is a small scripting language and toolchain, written in Rust, that
+generates Geometry Dash 2.2 objects and triggers and writes them into your level file. Loops, functions and
+variables replace hours of copy-and-paste in the editor.
 
 ```
-core/      language + codec library (lexer, parser, interpreter, base64/gzip, .gdlvl patcher)
-cli/       `gdl` command line tool
-worker/    wasm-bindgen wrapper + Cloudflare Worker with a mobile-friendly editor page
-examples/  demo.gdl
+let door = group()
+for i in 0..6 {
+  add_group(block("brick", 300, 15 + i * 30), door)       // a wall of six bricks
+}
+pickup(90, 75, 1, 1)                                       // item 1 += 1
+count(120, 75, 1, door, 3, false)                         // at 3, deactivate the wall
+move(150, 75, door, 0, 180, 1.5, easing = EASE_IN_OUT)     // and slide it away
 ```
 
-## Quick start
+- **45 wrapped 2.2 triggers**: move, rotate, scale, pulse, color, gradient, camera, song/SFX, pickup, count, item edit,
+  item compare, timers, collision, random and more. [Full reference](docs/TRIGGERS.md).
+- **Named options** for the long tail of trigger settings: `move(0, 0, 1, 0, 60, 2, easing = EASE_OUT)`.
+- **92 named blocks and objects** (`block("spike", x, y)`, `rect(B_BASIC, x, y, 4, 3)`). [Block list](docs/BLOCKS.md).
+- **Any other trigger or property** via `trigger(id, x, y)` and `set(handle, key, value)`.
+- **`.gdlrust` projects**: one plain-text file with your script, the level's objects and its wrapper.
+  Convert a `.gdlvl` into a `.gdlrust`, edit, and compile it back. [Format](docs/GDLRUST_FORMAT.md).
+- **Live preview editor** that runs in a browser (and on Cloudflare Workers) and redraws as you type.
+- **Zero dependencies** in the core. Runs as a CLI and as WebAssembly.
+
+> **Status:** early (0.x). Output is covered by automated tests and cross-checked against community property
+> tables, but it has not been exhaustively tested inside the game. **Always keep a backup of your level.**
+> Nothing here ever overwrites your original file.
+
+## Install
+
+You need [Rust](https://rustup.rs) (stable).
 
 ```sh
-cargo test                                   # run the test suite
-cargo run -p gdl -- run examples/demo.gdl    # print the generated objects
-cargo run -p gdl -- inspect MyLevel.gdlvl    # decode a level file and show its layout
-cargo run -p gdl -- patch MyLevel.gdlvl examples/demo.gdl   # -> MyLevel.patched.gdlvl
+git clone https://github.com/thebothyt/gdl.rust
+cd gdl.rust
+cargo install --path cli        # installs the `gdl` command
+gdl --help
 ```
 
-`patch` never touches your original; it writes `<name>.patched.gdlvl` (or `-o path`).
-Keep a backup of your level anyway.
+Or run without installing: `cargo run -p gdl -- <command>`.
 
-## The language
+## Five-minute tour
 
-```
-// comments
-let x = 10            // variables
-x += 5                // = += -= *= /=
-let s = "a" + 1       // strings (+ joins), numbers, true / false / nil
+**1. Start a project from a level you exported**
 
-if x > 3 && x < 100 { ... } else if x == 0 { ... } else { ... }
-for i in 0..10 { ... }              // 0 up to 9
-for i in 0..100 step 10 { ... }
-for i in 10..0 step -1 { ... }
-while x > 0 { x -= 1 }
-
-fn spike_row(x, n) {                // functions, recursion, return
-  for i in 0..n { obj(8, x + i * 30, 15) }
-}
+```sh
+gdl convert MyLevel.gdlvl          # -> MyLevel.gdlrust  (your original is untouched)
 ```
 
-A new line ends an expression, so a line starting with `-` or `(` begins a new statement.
-Functions can read and assign top-level variables. PI is predefined.
+**2. Open `MyLevel.gdlrust` and write code in its `%%% script` section**
 
-### Builtins
+```
+%%% script
+let g = group()                     // gets a group the level isn't already using
+for i in 0..5 { add_group(block("basic", 300 + i * 30, 15), g) }
+move(240, 45, g, 0, 90, 1, easing = EASE_IN_OUT)
+```
 
-| call | does |
+**3. Check what it makes**
+
+```sh
+gdl run MyLevel.gdlrust            # prints the new objects and any print() output
+```
+
+**4. Compile back into a level**
+
+```sh
+gdl compile MyLevel.gdlrust        # -> MyLevel.compiled.gdlvl
+```
+
+Prefer to keep your level and script separate? `gdl patch MyLevel.gdlvl script.gdl` appends a script's objects
+to a level, and `gdl new MyProject` makes an empty `.gdlrust` you can compile `--into` any level.
+
+## Commands
+
+| command | what it does |
 |---|---|
-| `obj(id, x, y)` | create an object, returns its handle |
-| `set(handle, key, value)` | set any raw GD property key |
-| `group()` / `color()` | next unused group / color channel (start at 1) |
-| `add_group(handle, g)` | put an object in group `g` (key 57, dot-joined) |
-| `move(x, y, target, dx, dy, secs)` | move trigger (id 901) |
-| `alpha(x, y, target, opacity, secs)` | alpha trigger (id 1007) |
-| `toggle(x, y, target, on)` | toggle trigger (id 1049) |
-| `pulse(x, y, channel, r, g, b, fade_in, hold, fade_out)` | pulse trigger (id 1006) |
-| `color_trigger(x, y, channel, r, g, b, secs)` | color trigger (id 899) |
-| `spawn(x, y, target, delay)` | spawn trigger (id 1268) |
-| `rotate(x, y, target, center, degrees, secs)` | rotate trigger (id 1346) |
-| `shake(x, y, strength, interval, secs)` | shake trigger (id 1520) |
-| `stop(x, y, target)` | stop trigger (id 1616) |
-| `trigger(id, x, y)` | **any** trigger by object id; returns a handle, then fill in properties with `set()` |
-| `print(...)` | log text (shown by `run` and the editor page) |
-| `floor ceil round abs sqrt sin cos` | 1-argument math |
-| `min max pow` | 2-argument math |
+| `gdl run <script.gdl \| project.gdlrust>` | run a script, print its objects |
+| `gdl new <name>` | create `<name>.gdlrust` with a starter script |
+| `gdl convert <level.gdlvl>` | `.gdlvl` to `.gdlrust` (and `.gdlrust` to `.gdlvl`) |
+| `gdl compile <project.gdlrust> [--into level.gdlvl]` | run the script and write a level |
+| `gdl patch <level.gdlvl> <script.gdl>` | append a script's objects to a level |
+| `gdl inspect <level.gdlvl>` | show how a level file is wrapped and encoded |
+| `gdl objects <level.gdlvl>` | list every object with its raw properties |
+| `gdl blocks` | list the named block variants |
+| `gdl preview` / `gdl base` | the JSON the web editor draws |
+| `gdl docs triggers\|blocks` | print the generated references |
 
-Safety limits (for hosting): 3,000,000 statements, 150,000 objects, 100 call depth.
+Output files are never written over an existing file unless you pass `--force`. Level and project files are
+your work, so the tools won't replace them by surprise.
 
-### Any trigger, any property
-
-Triggers without a named helper (counters, item edit, follow, touch, ...) work with `trigger()`
-plus `set()`. Every object ID is available as `ID_<NAME>` and every property key as `P_<NAME>`:
-
-```
-let t = trigger(ID_FOLLOW, 200, 15)
-set(t, P_TARGET, 3)         // group to move
-set(t, P_CENTER, 4)         // group to follow
-set(t, P_X_MOD, 1)
-set(t, P_DURATION, 5)
-```
-
-You can also pass raw numbers: `set(t, 51, 3)`. The tables come from SPWN's and gdlib's
-sources. They are the same IDs the game uses, but the counter/item keys changed in 2.2, so
-if a trigger does nothing, place one in the editor, export, and run `gdl objects level.gdlvl`
-to see its real keys.
-
-## Visual editor
-
-The Worker page draws a live preview: objects already in your level (grey), objects from your
-script (blue), triggers (orange diamonds), and a dashed line from each trigger to the objects in
-its target group. Tap an object to see its properties and the script line that made it (that
-line gets highlighted in the editor). Drag to pan, pinch or +/- to zoom. A script error shows
-under the editor and the last good picture stays on screen.
-
-CLI equivalents: `gdl preview script.gdl`, `gdl base level.gdlvl`, `gdl objects level.gdlvl`.
-
-## Cloudflare Worker
+## Live preview editor
 
 ```sh
 rustup target add wasm32-unknown-unknown
 cargo install wasm-pack
-cd worker
-wasm-pack build --target web --out-dir pkg
-npx wrangler dev        # then open the printed URL, also works from your phone on LAN
-npx wrangler deploy
+cd worker && wasm-pack build --target web --out-dir pkg && npx wrangler dev
 ```
 
-The Worker can't see files on your device: you upload the `.gdlvl` and the script,
-and it returns the patched file to download.
+Open the printed URL. The page redraws your script 350 ms after you stop typing: blocks, spikes, slabs, orbs and
+pads as shapes, triggers as labelled diamonds with dashed lines to the groups they target. Tap an object to see
+its properties and the script line that made it. Load a `.gdlvl` to see its existing objects underneath, or open and
+save `.gdlrust` projects directly. Details and deployment: [docs/WORKER.md](docs/WORKER.md).
 
-## Ideas for next steps (for me lmao)
+**Privacy:** the editor and the Worker use no cookies, no localStorage and no KV or database. Files you upload are
+processed in memory and returned. Your project lives in the `.gdlrust` file you save.
 
-Lists/arrays, `rand()`, more triggers (pulse, spawn, rotate, follow), grouping helpers like
-`obj_in(group, ...)`, colors (`color` channel triggers), an `import` for reusable files, and a
-`gdl fmt`.
+## Documentation
 
+| | |
+|---|---|
+| [Getting started](docs/GETTING_STARTED.md) | a longer walkthrough, with troubleshooting |
+| [Language guide](docs/LANGUAGE.md) | syntax, builtins, constants, limits |
+| [Trigger reference](docs/TRIGGERS.md) | every wrapped trigger, argument and constant (generated) |
+| [Block reference](docs/BLOCKS.md) | named blocks and objects (generated) |
+| [.gdlrust format](docs/GDLRUST_FORMAT.md) | the project file, byte for byte |
+| [Cloudflare Worker](docs/WORKER.md) | running and deploying the web editor |
+| [Examples](examples/) | runnable scripts: `blocks.gdl`, `triggers.gdl`, `demo.gdl` |
+
+## Project layout
+
+```
+core/      language + codec library: lexer, parser, interpreter, trigger and block tables,
+           .gdlvl codec, .gdlrust projects (no dependencies)
+cli/       the `gdl` command
+worker/    wasm-bindgen wrapper + Cloudflare Worker + editor page
+docs/      guides; TRIGGERS.md and BLOCKS.md are generated and checked by tests
+examples/  scripts and a small sample level
+```
+
+## Contributing
+
+Issues and pull requests are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md). The most useful contributions are
+new trigger entries (one table row each, see `core/src/triggers.rs`) and verifying keys against the 2.2 game.
+
+## License and disclaimer
+
+[MIT](LICENSE). This is an unofficial community tool, not affiliated with or endorsed by RobTop Games.
+Geometry Dash is a trademark of its owner.
