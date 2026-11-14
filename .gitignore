@@ -3,3 +3,4 @@ pkg/
 node_modules/
 .wrangler/
 *.patched.gdlvl
+*.compiled.gdlvl

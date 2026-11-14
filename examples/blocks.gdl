@@ -1,0 +1,24 @@
+// A small obstacle course built from the block catalog (run `gdl blocks` for every name).
+
+// ground slab 12 blocks wide
+rect(B_BASIC, 15, 15, 12, 2)
+
+// a staircase of bevel blocks
+for i in 0..4 {
+  rect(B_BEVEL, 405 + i * 30, 75 + i * 30, 1, 1)
+}
+
+// spikes with a pad in front of them
+block("yellow_pad", 285, 45)
+for i in 0..3 {
+  block("spike", 315 + i * 30, 45)
+}
+
+// a rotated, shrunk saw
+let saw = block("saw_medium", 225, 105)
+set_rotation(saw, 45)
+set_scale(saw, 0.75)
+
+// portals
+block("ship_portal", 120, 75)
+block("speed_fast", 150, 75)

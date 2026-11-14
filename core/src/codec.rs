@@ -352,17 +352,17 @@ pub fn gzip_stored(data: &[u8]) -> Vec<u8> {
 
 // ---------------------------------------------------------------- .gdlvl
 
-enum Wrap {
+pub(crate) enum Wrap {
     Gzip,
     B64 { urlsafe: bool },
     Plain,
 }
 
-fn utf8(b: Vec<u8>) -> Result<String, String> {
+pub(crate) fn utf8(b: Vec<u8>) -> Result<String, String> {
     String::from_utf8(b).map_err(|_| "decoded data is not valid UTF-8 text".to_string())
 }
 
-fn unwrap_file(file: &[u8]) -> Result<(Wrap, String), String> {
+pub(crate) fn unwrap_file(file: &[u8]) -> Result<(Wrap, String), String> {
     if file.len() >= 2 && file[0] == 0x1f && file[1] == 0x8b {
         return Ok((Wrap::Gzip, utf8(gunzip(file)?)?));
     }
@@ -386,7 +386,28 @@ fn unwrap_file(file: &[u8]) -> Result<(Wrap, String), String> {
     ))
 }
 
-fn rewrap(wrap: &Wrap, text: &str) -> Vec<u8> {
+impl Wrap {
+    pub(crate) fn name(&self) -> &'static str {
+        match self {
+            Wrap::Gzip => "gzip",
+            Wrap::B64 { urlsafe: false } => "base64",
+            Wrap::B64 { urlsafe: true } => "base64-urlsafe",
+            Wrap::Plain => "xml",
+        }
+    }
+
+    pub(crate) fn from_name(s: &str) -> Option<Wrap> {
+        Some(match s {
+            "gzip" => Wrap::Gzip,
+            "base64" => Wrap::B64 { urlsafe: false },
+            "base64-urlsafe" => Wrap::B64 { urlsafe: true },
+            "xml" => Wrap::Plain,
+            _ => return None,
+        })
+    }
+}
+
+pub(crate) fn rewrap(wrap: &Wrap, text: &str) -> Vec<u8> {
     match wrap {
         Wrap::Plain => text.as_bytes().to_vec(),
         Wrap::Gzip => gzip_stored(text.as_bytes()),
@@ -395,7 +416,7 @@ fn rewrap(wrap: &Wrap, text: &str) -> Vec<u8> {
 }
 
 /// Byte range of the text inside `<k>k4</k><s>...</s>`.
-fn find_k4(xml: &str) -> Option<(usize, usize)> {
+pub(crate) fn find_k4(xml: &str) -> Option<(usize, usize)> {
     let key = "<k>k4</k>";
     let after = xml.find(key)? + key.len();
     let s_rel = xml[after..].find("<s>")?;
@@ -407,12 +428,12 @@ fn find_k4(xml: &str) -> Option<(usize, usize)> {
     Some((start, end))
 }
 
-struct K4 {
-    raw: String,
-    compressed: bool,
+pub(crate) struct K4 {
+    pub(crate) raw: String,
+    pub(crate) compressed: bool,
 }
 
-fn read_k4(s: &str) -> Result<K4, String> {
+pub(crate) fn read_k4(s: &str) -> Result<K4, String> {
     let t = s.trim();
     if t.starts_with("H4sI") {
         let raw = utf8(gunzip(&b64_decode(t)?)?)?;
@@ -420,6 +441,37 @@ fn read_k4(s: &str) -> Result<K4, String> {
     } else {
         Ok(K4 { raw: t.to_string(), compressed: false })
     }
+}
+
+/// The level header and the object records (everything after the first `;`) of a .gdlvl file.
+pub fn level_objects(file: &[u8]) -> Result<(String, String), String> {
+    let (_, text) = unwrap_file(file)?;
+    let (a, b) = find_k4(&text).ok_or_else(|| {
+        "couldn't find the level string (<k>k4</k>) in this file".to_string()
+    })?;
+    let k = read_k4(&text[a..b])?;
+    Ok(match k.raw.split_once(';') {
+        Some((h, rest)) => (h.to_string(), rest.to_string()),
+        None => (k.raw, String::new()),
+    })
+}
+
+/// One object per line: index, object id, and the raw key,value record. Handy for
+/// finding the IDs and property keys of anything you placed in the editor.
+pub fn list_objects(file: &[u8]) -> Result<String, String> {
+    let (header, objects) = level_objects(file)?;
+    let mut out = format!("header: {header}\n");
+    for (i, rec) in objects.split(';').filter(|r| !r.is_empty()).enumerate() {
+        let parts: Vec<&str> = rec.split(',').collect();
+        let id = parts
+            .chunks(2)
+            .find(|c| c[0] == "1")
+            .and_then(|c| c.get(1))
+            .copied()
+            .unwrap_or("?");
+        out.push_str(&format!("{i:>5}  id {id:<5}  {rec}\n"));
+    }
+    Ok(out)
 }
 
 /// Human-readable dump of a .gdlvl file: layers, XML, and the level-string summary.

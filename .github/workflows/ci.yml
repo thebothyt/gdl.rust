@@ -1,0 +1,13 @@
+name: CI
+on:
+  push:
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test (also checks that docs/TRIGGERS.md and docs/BLOCKS.md are up to date)
+        run: cargo test --locked
+      - name: Build the CLI
+        run: cargo build --release -p gdl --locked

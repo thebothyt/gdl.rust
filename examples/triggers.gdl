@@ -1,0 +1,48 @@
+// A tour of the 2.2 triggers. Optional settings are given by name.
+// Positions are (x, y) in units: 30 units = 1 block.
+
+let platform = group()
+let door = group()
+let item = 1
+
+// a platform that bounces up and down, eased
+let p = block("black", 15, 15)
+add_group(p, platform)
+move(60, 45, platform, 0, 90, 1.5, easing = EASE_IN_OUT)
+move(120, 45, platform, 0, -90, 1.5, easing = EASE_IN_OUT, easing_rate = 1.5)
+
+// a door that opens after the player picks up 3 coins
+let d = block("black", 300, 45)
+add_group(d, door)
+pickup(90, 75, item, 1)
+pickup(120, 75, item, 1)
+pickup(150, 75, item, 1)
+count(180, 75, item, door, 3, false)       // item reaches 3 -> deactivate the door group
+
+// do some arithmetic with items: item 5 = item 1 * 2
+item_edit(210, 75, 5, OP_SET, 2, item1 = item, mod_op = OP_MUL)
+
+// branch on a comparison
+let big = group()
+let small = group()
+item_compare(240, 75, 5, 6, CMP_GTE, big, small)
+
+// colour and light
+color_trigger(0, 105, 1, 255, 80, 0, 1.0, opacity = 0.8)
+pulse(30, 105, 1, 255, 255, 255, 0.1, 0.2, 0.3)
+gradient(60, 105, 1, 2, 3, 4, 5, layer = LAYER_B1, blending = BLEND_ADDITIVE)
+
+// camera
+camera_zoom(0, 135, 1.5, 1, easing = EASE_OUT)
+camera_offset(30, 135, 0, 60, 1)
+shake(60, 135, 3, 0.1, 1)
+
+// timers and randomness
+timer(0, 165, 1, 0)
+time_event(30, 165, 1, big, 5)
+random(60, 165, 50, big, small)
+
+// anything not wrapped: make it by id, then set properties by key
+let t = trigger(ID_TOUCH, 90, 165)
+set(t, P_TARGET, door)
+print("platform group", platform, "door group", door)

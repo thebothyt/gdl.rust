@@ -28,6 +28,8 @@ pub enum Expr {
     Not(Box<Expr>),
     Bin(BinOp, Box<Expr>, Box<Expr>),
     Call(String, Vec<Expr>),
+    /// `name = value` inside a call's argument list.
+    Named(String, Box<Expr>),
 }
 
 #[derive(Debug)]
